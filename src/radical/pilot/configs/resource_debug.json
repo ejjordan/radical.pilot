@@ -1,6 +1,6 @@
 
 {
-    "local": {
+    "summit": {
         "description"                 : "",
         "notes"                       : "",
         "schemas"                     : ["local"],
@@ -13,7 +13,7 @@
         "resource_manager"            : "FORK",
         "agent_config"                : "default_sa",
         "agent_scheduler"             : "CONTINUOUS",
-        "agent_spawner"               : "POPEN",
+        "agent_spawner"               : "SLEEP",
         "launch_methods"              : {
                                          "order" : ["FORK", "MPIRUN"],
                                          "FORK"  : {},
