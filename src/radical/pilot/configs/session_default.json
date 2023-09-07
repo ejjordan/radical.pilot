@@ -19,7 +19,9 @@
         "control_pubsub"        : {"kind": "pubsub"},
 
         "stager_request_queue"  : {"kind": "queue" },
-        "stager_response_pubsub": {"kind": "pubsub"}
+        "stager_response_pubsub": {"kind": "pubsub"},
+        "tracer_queue"          : {"kind": "queue", "log_level": "error",
+                                   "stall_hwm": 1, "bulk_size": 0}
     },
 
     "components" : {
