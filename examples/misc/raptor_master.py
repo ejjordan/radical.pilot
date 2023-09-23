@@ -10,11 +10,6 @@ import radical.utils as ru
 import radical.pilot as rp
 
 
-def out(msg):
-    sys.stdout.write('==== %s\n' % msg)
-    sys.stdout.flush()
-
-
 # This script has to run as a task within a pilot allocation, and is
 # a demonstration of a task overlay within the RCT framework. It is expected
 # to be staged and launched by the `raptor.py` script in the radical.pilot
@@ -294,9 +289,6 @@ if __name__ == '__main__':
 
     master.start()
     master.submit()
-
-    # let some time pass for client side tasks to complete
-    time.sleep(60)
 
     # TODO: can be run from thread?
     master.stop()
