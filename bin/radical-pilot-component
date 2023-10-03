@@ -93,14 +93,14 @@ def wrapped_main(sid, reg_addr, uid, log, prof):
     hb_pub = ru.zmq.Publisher('heartbeat', hb_cfg.addr_pub, log=log, prof=prof)
 
     def hb_beat_cb():
-        hb_pub.put('heartbeat', HeartbeatMessage(uid))
+        hb_pub.put('heartbeat', HeartbeatMessage(uid=uid))
 
     def hb_term_cb(hb_uid):
         comp.stop()
         term.set()
-        return None
+        return False
 
-    hb = ru.Heartbeat(uid=c_cfg.uid,
+    hb = ru.Heartbeat(uid=uid,
                       timeout=hb_cfg.timeout,
                       interval=hb_cfg.interval,
                       beat_cb=hb_beat_cb,

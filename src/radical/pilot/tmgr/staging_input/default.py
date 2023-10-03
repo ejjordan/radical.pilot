@@ -68,10 +68,6 @@ class Default(TMGRStagingInputComponent):
         self.register_output(rps.AGENT_STAGING_INPUT_PENDING,
                              rpc.PROXY_TASK_QUEUE)
 
-        # we subscribe to the command channel to learn about pilots being added
-        # to this task manager.
-        self.register_subscriber(rpc.CONTROL_PUBSUB, self._control_cb)
-
         self._mkdir_threshold = self.cfg.get('task_bulk_mkdir_threshold',
                                              TASK_BULK_MKDIR_THRESHOLD)
 
@@ -86,7 +82,7 @@ class Default(TMGRStagingInputComponent):
 
     # --------------------------------------------------------------------------
     #
-    def _control_cb(self, topic, msg):
+    def control_cb(self, topic, msg):
 
         # keep track of `add_pilots` commands and updates self._pilots
         # accordingly.
@@ -119,8 +115,6 @@ class Default(TMGRStagingInputComponent):
             self.publish(rpc.CONTROL_PUBSUB, msg={'cmd': 'pilot_register_ok',
                                                   'arg': {'pid': pid}})
 
-        return True
-
 
     # --------------------------------------------------------------------------
     #
@@ -131,6 +125,9 @@ class Default(TMGRStagingInputComponent):
 
         # perform and publish state update
         # push to the proxy queue
+        for task in tasks:
+            self._log.debug_8('push to proxy: %s', task['uid'])
+
         self.advance(tasks, state, publish=True, push=push, qname=pid)
 
 
@@ -205,12 +202,12 @@ class Default(TMGRStagingInputComponent):
 
             if not pilot:
                 # we don't feel inclined to optimize for unknown pilots
-                self._log.debug('pid unknown - skip optimizion', pid)
+                self._log.debug('pid unknown - skip optimization', pid)
                 continue
 
             task_sboxes  = sboxes[pid]
 
-            if False or len(task_sboxes) >= self._mkdir_threshold:
+            if len(task_sboxes) >= self._mkdir_threshold:
                 self._log.debug('tar %d sboxes', len(task_sboxes))
 
                 session_sbox = self._session._get_session_sandbox(pilot)
@@ -287,14 +284,14 @@ class Default(TMGRStagingInputComponent):
                   #         j.exit_code)
 
 
-        if no_staging_tasks:
-
-            # nothing to stage, push to the agent
-            self._advance_tasks(no_staging_tasks[pid], pid)
+        for pid in no_staging_tasks:
+            if no_staging_tasks[pid]:
+                # nothing to stage, push to the agent
+                self._advance_tasks(no_staging_tasks[pid], pid)
 
         to_fail = list()
         for pid in staging_tasks:
-            for task,actionables in staging_tasks[pid]:
+            for task, actionables in staging_tasks[pid]:
                 try:
                     self._handle_task(task, actionables)
                     self._advance_tasks([task], pid)

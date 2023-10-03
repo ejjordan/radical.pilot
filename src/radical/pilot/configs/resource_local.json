@@ -6,12 +6,12 @@
         "default_schema"              : "local",
         "schemas"                     : {
             "ssh"                     : {
-                "job_manager_endpoint": "ssh://localhost/",
-                "filesystem_endpoint" : "sftp://localhost/"
+                "job_manager_endpoint": "ssh://localhost",
+                "filesystem_endpoint" : "sftp://localhost"
             },
             "local"                   : {
-                "job_manager_endpoint": "fork://localhost/",
-                "filesystem_endpoint" : "file://localhost/"
+                "job_manager_endpoint": "fork://localhost",
+                "filesystem_endpoint" : "file://localhost"
             }
         },
         "default_remote_workdir"      : "$HOME",

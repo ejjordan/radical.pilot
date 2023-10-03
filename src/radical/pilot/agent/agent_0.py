@@ -15,7 +15,6 @@ import radical.utils       as ru
 from ..   import utils     as rpu
 from ..   import states    as rps
 from ..   import constants as rpc
-from ..   import TaskDescription
 from ..   import Session
 from ..   import TaskDescription, AGENT_SERVICE
 
@@ -48,7 +47,6 @@ class Agent_0(rpu.Worker):
         self._pwd     = cfg.pilot_sandbox
 
         self._session = Session(uid=cfg.sid, cfg=cfg, _role=Session._AGENT_0)
-        self._rcfg    = self._session._rcfg
 
         # init the worker / component base classes, connects registry
         rpu.Worker.__init__(self, cfg, self._session)
@@ -83,19 +81,19 @@ class Agent_0(rpu.Worker):
     #
     def _proxy_input_cb(self, msg):
 
-        self._log.debug('proxy input cb: %s', len(msg))
+        self._log.debug_8('proxy input cb: %s', len(msg))
 
         to_advance = list()
 
         for task in msg:
 
             # make sure the tasks obtain env settings (if needed)
-            if 'task_environment' in self._cfg:
+            if 'task_environment' in self.session.rcfg:
 
                 if not task['description'].get('environment'):
                     task['description']['environment'] = dict()
 
-                for k,v in self._cfg['task_environment'].items():
+                for k,v in self.session.rcfg.task_environment.items():
                     # FIXME: this might overwrite user specified env
                     task['description']['environment'][k] = v
 
@@ -139,9 +137,10 @@ class Agent_0(rpu.Worker):
         # use for sub-agent startup.  Add the remaining ResourceManager
         # information to the config, for the benefit of the scheduler).
 
-        self._cfg.reg_addr = self._session.reg_addr
-        self._rm = ResourceManager.create(name=self._rcfg.resource_manager,
-                                          cfg=self._cfg, rcfg=self._rcfg,
+        rname    = self.session.rcfg.resource_manager
+        self._rm = ResourceManager.create(name=rname,
+                                          cfg=self.session.cfg,
+                                          rcfg=self.session.rcfg,
                                           log=self._log, prof=self._prof)
 
         self._log.debug(pprint.pformat(self._rm.info))
@@ -155,12 +154,12 @@ class Agent_0(rpu.Worker):
         # channels, merge those into the agent config
         #
         # FIXME: this needs to start the app_comm bridges
-        app_comm = self._rcfg.get('app_comm')
+        app_comm = self.session.rcfg.get('app_comm')
         if app_comm:
 
             # bridge addresses also need to be exposed to the workload
-            if 'task_environment' not in self._rcfg:
-                self._rcfg['task_environment'] = dict()
+            if 'task_environment' not in self.session.rcfg:
+                self.session.rcfg['task_environment'] = dict()
 
             if isinstance(app_comm, list):
                 app_comm = {ac: {'bulk_size': 0,
@@ -175,16 +174,13 @@ class Agent_0(rpu.Worker):
 
                 AC = ac.upper()
 
-                self._rcfg['task_environment']['RP_%s_IN'  % AC] = ac['addr_in']
-                self._rcfg['task_environment']['RP_%s_OUT' % AC] = ac['addr_out']
+                self.session.rcfg.task_environment['RP_%s_IN'  % AC] = ac['addr_in']
+                self.session.rcfg.task_environment['RP_%s_OUT' % AC] = ac['addr_out']
 
 
     # --------------------------------------------------------------------------
     #
     def initialize(self):
-
-        # handle pilot commands
-        self.register_subscriber(rpc.CONTROL_PUBSUB, self._control_cb)
 
         # listen for new tasks from the client
         self.register_input(rps.AGENT_STAGING_INPUT_PENDING,
@@ -196,31 +192,17 @@ class Agent_0(rpu.Worker):
         self.register_output(rps.AGENT_STAGING_INPUT_PENDING,
                              rpc.AGENT_STAGING_INPUT_QUEUE)
 
-        # listen for completed tasks to foward to client
+        # listen for completed tasks to forward to client
         self.register_input(rps.TMGR_STAGING_OUTPUT_PENDING,
                             rpc.AGENT_COLLECTING_QUEUE,
-                            qname='default',
                             cb=self._proxy_output_cb)
 
         # and register output
         self.register_output(rps.TMGR_STAGING_OUTPUT_PENDING,
                              rpc.PROXY_TASK_QUEUE)
 
-        # subscribe for control messages
-        ru.zmq.Subscriber(channel=rpc.CONTROL_PUBSUB, cb=self._control_cb,
-               url=self._reg['bridges.%s.addr_sub' % rpc.CONTROL_PUBSUB])
-
-
-        if True:
-            time.sleep(1)
-            reg = ru.zmq.RegistryClient(url=self._reg._url)
-            pub = ru.zmq.Publisher('control_pubsub', reg['bridges.control_pubsub.addr_pub'])
-
-            pub.put('control_pubsub', msg={'cmd': 'service_up',
-                                           'uid': 'test.1'})
-
-            # make sure the message goes out
-            time.sleep(1)
+        self.register_rpc_handler('prepare_env', self._prepare_env,
+                                                 addr=self._pid)
 
         # before we run any tasks, prepare a named_env `rp` for tasks which use
         # the pilot's own environment, such as raptors
@@ -231,7 +213,8 @@ class Agent_0(rpu.Worker):
                                  'export PATH=%s'
                                  %  os.environ.get('PATH', '')]
                    }
-        self._prepare_env('rp', env_spec)
+        self.rpc('prepare_env', env_name='rp', env_spec=env_spec,
+                                addr=self._pid)
 
         # start any services if they are requested
         self._start_services()
@@ -241,7 +224,10 @@ class Agent_0(rpu.Worker):
         rm_info = self._rm.info
         n_nodes = len(rm_info['node_list'])
 
-        pilot = {'type'     : 'pilot',
+        self._log.debug('advance to PMGR_ACTIVE')
+
+        pilot = {'$all'     : True,              # pass full info to client side
+                 'type'     : 'pilot',
                  'uid'      : self._pid,
                  'state'    : rps.PMGR_ACTIVE,
                  'resources': {'rm_info': rm_info,
@@ -310,13 +296,11 @@ class Agent_0(rpu.Worker):
                  'stdout' : out,
                  'stderr' : err,
                  'logfile': log,
-                 'state'  : state,
-                 'forward': True}
+                 'state'  : state}
 
         self._log.debug('push final state update')
         self._log.debug('update state: %s: %s', state, self._final_cause)
-        self.publish(rpc.STATE_PUBSUB,
-                     topic=rpc.STATE_PUBSUB, msg=[pilot])
+        self.advance(pilot, publish=True, push=False)
 
         # tear things down in reverse order
         self._rm.stop()
@@ -331,19 +315,19 @@ class Agent_0(rpu.Worker):
         # sub-agent config files.
 
         # write deep-copies of the config for each sub-agent (sans from agent_0)
-        for sa in self._rcfg.get('agents', {}):
+        for sa in self.session.cfg.get('agents', {}):
 
             assert (sa != 'agent_0'), 'expect subagent, not agent_0'
 
             # use our own config sans agents/components/bridges as a basis for
             # the sub-agent config.
-            tmp_cfg = copy.deepcopy(self._session._cfg)
+            tmp_cfg = copy.deepcopy(self.session.cfg)
             tmp_cfg['agents']     = dict()
             tmp_cfg['components'] = dict()
             tmp_cfg['bridges']    = dict()
 
             # merge sub_agent layout into the config
-            ru.dict_merge(tmp_cfg, self._cfg['agents'][sa], ru.OVERWRITE)
+            ru.dict_merge(tmp_cfg, self.session.cfg['agents'][sa], ru.OVERWRITE)
 
             tmp_cfg['uid']   = sa
             tmp_cfg['aid']   = sa
@@ -354,84 +338,116 @@ class Agent_0(rpu.Worker):
     #
     def _start_services(self):
 
-        sds = self._cfg.services
-        if not sds:
+        if not self.session.cfg.services:
             return
 
         self._log.info('starting agent services')
 
-        services = list()
-        for sd in sds:
+        services      = []
+        services_data = {}
+
+        for sd in self.session.cfg.services:
 
             td      = TaskDescription(sd)
             td.mode = AGENT_SERVICE
             # ensure that the description is viable
             td.verify()
 
-            cfg = self._cfg
             tid = ru.generate_id('service.%(item_counter)04d',
-                                 ru.ID_CUSTOM, ns=self._cfg.sid)
+                                 ru.ID_CUSTOM, ns=self.session.uid)
             task = dict()
+            task['uid']               = tid
+            task['type']              = 'service_task'
             task['origin']            = 'agent'
+            task['pilot']             = self.session.cfg.pid
             task['description']       = td.as_dict()
             task['state']             = rps.AGENT_STAGING_INPUT_PENDING
-            task['status']            = 'NEW'
-            task['type']              = 'service_task'
-            task['uid']               = tid
-            task['pilot_sandbox']     = cfg.pilot_sandbox
-            task['task_sandbox']      = cfg.pilot_sandbox + task['uid'] + '/'
-            task['task_sandbox_path'] = cfg.pilot_sandbox + task['uid'] + '/'
-            task['session_sandbox']   = cfg.session_sandbox
-            task['resource_sandbox']  = cfg.resource_sandbox
-            task['pilot']             = cfg.pid
+            task['pilot_sandbox']     = self.session.cfg.pilot_sandbox
+            task['session_sandbox']   = self.session.cfg.session_sandbox
+            task['resource_sandbox']  = self.session.cfg.resource_sandbox
             task['resources']         = {'cpu': td.ranks * td.cores_per_rank,
                                          'gpu': td.ranks * td.gpus_per_rank}
+
+            task_sandbox = self.session.cfg.pilot_sandbox + tid + '/'
+            task['task_sandbox']      = task_sandbox
+            task['task_sandbox_path'] = task_sandbox
+
+            # TODO: use `type='service_task'` in RADICAL-Analytics
+
+            # TaskDescription.metadata will contain service related data:
+            # "name" (unique), "startup_file"
 
             self._service_uids_launched.append(tid)
             services.append(task)
 
-            self._log.debug('start service %s: %s', tid, sd)
-
+            services_data[tid] = {}
+            if td.metadata.get('startup_file'):
+                n = td.metadata.get('name')
+                services_data[tid]['name'] = 'service.%s' % n if n else tid
+                services_data[tid]['startup_file'] = td.metadata['startup_file']
 
         self.advance(services, publish=False, push=True)
 
-        # Waiting 2mins for all services to launch
-        if not self._services_setup.wait(timeout=60 * 2):
+        self.register_timed_cb(cb=self._services_startup_cb,
+                               cb_data=services_data,
+                               timer=2)
+
+        # waiting for all services to start (max waiting time 2 mins)
+        if not self._services_setup.wait(timeout=120):
             raise RuntimeError('Unable to start services')
+
+        self.unregister_timed_cb(self._services_startup_cb)
 
         self._log.info('all agent services started')
 
+    def _services_startup_cb(self, cb_data):
 
-    # --------------------------------------------------------------------------
-    #
-    def _service_state_cb(self, topic, msg):  # pylint: disable=unused-argument
+        for tid in list(cb_data):
 
-        cmd   = msg['cmd']
-        tasks = msg['arg']
+            service_up   = False
+            startup_file = cb_data[tid].get('startup_file')
 
-        if cmd != 'update':
-            return
+            if not startup_file:
+                service_up = True
+                # FIXME: at this point we assume that since "startup_file" is
+                #        not provided, then we don't wait - this will be
+                #        replaced with another callback (Component.advance will
+                #        publish control command "service_up" for service tasks)
 
-        for service in ru.as_list(tasks):
+            elif os.path.isfile(startup_file):
+                # if file exists then service is up (general approach)
+                service_up = True
 
-            if service['uid'] not in self._service_uids_launched or \
-                    service['uid'] in self._service_uids_running:
-                continue
+                # collect data from the startup file: at this point we look
+                # for URLs only
+                service_urls = {}
+                with ru.ru_open(startup_file, 'r') as fin:
+                    for line in fin.readlines():
+                        if '://' not in line:
+                            continue
+                        parts = line.split()
+                        if len(parts) == 1:
+                            idx, url = '', parts[0]
+                        elif '://' in parts[1]:
+                            idx, url = parts[0], parts[1]
+                        else:
+                            continue
+                        service_urls[idx] = url
 
-            self._log.debug('service state update %s: %s',
-                            service['uid'], service['state'])
-            if service['state'] != rps.AGENT_EXECUTING:
-                continue
+                if service_urls:
+                    key = cb_data[tid]['name']
+                    for idx, url in service_urls.items():
+                        if idx:
+                            key += '.%s' % idx
+                        key += '.url'
+                        self.session._reg[key] = url
 
-            self._service_uids_running.append(service['uid'])
-            self._log.debug('service %s started (%s / %s)', service['uid'],
-                            len(self._service_uids_running),
-                            len(self._service_uids_launched))
+            if service_up:
+                self.publish(rpc.CONTROL_PUBSUB, {'cmd': 'service_up',
+                                                  'arg': {'uid': tid}})
+                del cb_data[tid]
 
-            if len(self._service_uids_launched) == \
-                    len(self._service_uids_running):
-                self._services_setup.set()
-
+        return True
 
     # --------------------------------------------------------------------------
     #
@@ -444,10 +460,14 @@ class Agent_0(rpu.Worker):
 
         # FIXME: reroute to agent daemonizer
 
-        if not self._cfg.get('agents'):
+        if not self.session.cfg.get('agents'):
             return
 
-        assert (len(self._rm.info.agent_node_list) >= len(self._cfg['agents']))
+        n_agents      = len(self.session.cfg['agents'])
+        n_agent_nodes = len(self._rm.info.agent_node_list)
+
+        assert n_agent_nodes >= n_agents
+
 
         self._log.debug('start_sub_agents')
 
@@ -456,14 +476,14 @@ class Agent_0(rpu.Worker):
 
         # the configs are written, and the sub-agents can be started.  To know
         # how to do that we create the agent launch method, have it creating
-        # the respective command lines per agent instance, and run via
-        # popen.
-        #
+        # the respective command lines per agent instance, and run via popen.
 
-        for idx, sa in enumerate(self._cfg['agents']):
+        bs_name = '%s/bootstrap_2.sh'
 
-            target  = self._cfg['agents'][sa]['target']
-            cmdline = None
+        for idx, sa in enumerate(self.session.cfg['agents']):
+
+            target  = self.session.cfg['agents'][sa]['target']
+            bs_args = [self._sid, self.session.cfg.reg_addr, sa]
 
             if target not in ['local', 'node']:
 
@@ -472,8 +492,8 @@ class Agent_0(rpu.Worker):
             if target == 'local':
 
                 # start agent locally
-                cmdline = '/bin/sh -l %s/bootstrap_2.sh %s' % (self._pwd, sa)
-
+                bs_path = bs_name % self._pwd
+                cmdline = '/bin/sh -l %s' % ' '.join([bs_path] + bs_args)
 
             else:  # target == 'node':
 
@@ -488,7 +508,7 @@ class Agent_0(rpu.Worker):
                 #        out for the moment, which will make this unable to
                 #        work with a number of launch methods.  Can the
                 #        offset computation be moved to the ResourceManager?
-                bs_name       = '%s/bootstrap_2.sh' % (self._pwd)
+
                 launch_script = '%s/%s.launch.sh'   % (self._pwd, sa)
                 exec_script   = '%s/%s.exec.sh'     % (self._pwd, sa)
 
@@ -500,7 +520,7 @@ class Agent_0(rpu.Worker):
                         'ranks'         : 1,
                         'cores_per_rank': self._rm.info.cores_per_node,
                         'executable'    : '/bin/sh',
-                        'arguments'     : [bs_name, self._sid, self.cfg.reg_addr, sa]
+                        'arguments'     : [bs_name % self._pwd] + bs_args
                     }).as_dict(),
                     'slots': {'ranks'   : [{'node_name': node['node_name'],
                                             'node_id'  : node['node_id'],
@@ -532,8 +552,7 @@ class Agent_0(rpu.Worker):
 
                 tmp  = '#!/bin/sh\n\n'
                 tmp += '. ./env/agent.env\n'
-                tmp += '/bin/sh -l ./bootstrap_2.sh %s %s %s\n\n' \
-                     % (self._sid, self.cfg.reg_addr, sa)
+                tmp += '/bin/sh -l %s\n\n' % ' '.join([bs_name % '.'] + bs_args)
 
                 with ru.ru_open(exec_script, 'w') as fout:
                     fout.write(tmp)
@@ -561,11 +580,13 @@ class Agent_0(rpu.Worker):
     def _check_lifetime(self):
 
         # Make sure that we haven't exceeded the runtime - otherwise terminate.
-        if self._cfg.runtime:
+        if self.session.cfg.runtime:
 
-            if time.time() >= self._starttime +  (int(self._cfg.runtime) * 60):
+            if time.time() >= self._starttime + \
+                                           (int(self.session.cfg.runtime) * 60):
 
-                self._log.info('runtime limit (%ss).', self._cfg.runtime * 60)
+                self._log.info('runtime limit (%ss).',
+                               self.session.cfg.runtime * 60)
                 self._final_cause = 'timeout'
                 self.stop()
                 return False  # we are done
@@ -575,50 +596,29 @@ class Agent_0(rpu.Worker):
 
     # --------------------------------------------------------------------------
     #
-    def _control_cb(self, _, msg):
+    def control_cb(self, topic, msg):
         '''
         Check for commands on the control pubsub, mainly waiting for RPC
         requests to handle.
         '''
 
-        self._log.debug('==== control: %s', msg)
+        self._log.debug_1('control msg %s: %s', topic, msg)
 
         cmd = msg['cmd']
-        arg = msg['arg']
+        arg = msg.get('arg')
 
         self._log.debug('pilot command: %s: %s', cmd, arg)
         self._prof.prof('cmd', msg="%s : %s" %  (cmd, arg), uid=self._pid)
-
 
         if cmd == 'pmgr_heartbeat' and arg['pmgr'] == self._pmgr:
             self._session._hb.beat(uid=self._pmgr)
             return True
 
-        elif cmd == 'prep_env':
-            return self._ctrl_prepare_env(msg)
-
         elif cmd == 'cancel_pilots':
             return self._ctrl_cancel_pilots(msg)
 
-        elif cmd == 'rpc_req':
-            return self._ctrl_rpc_req(msg)
-
         elif cmd == 'service_up':
             return self._ctrl_service_up(msg)
-
-        return True
-
-
-    # --------------------------------------------------------------------------
-    #
-    def _ctrl_prepare_env(self, msg):
-
-        arg = msg['arg']
-
-        for env_id in arg:
-            self._prepare_env(env_id, arg[env_id])
-
-        return True
 
 
     # --------------------------------------------------------------------------
@@ -642,54 +642,8 @@ class Agent_0(rpu.Worker):
 
     # --------------------------------------------------------------------------
     #
-    def _ctrl_rpc_req(self, msg):
-
-        cmd = msg['cmd']
-        arg = msg['arg']
-        req = arg['rpc']
-
-        if req not in ['hello', 'prepare_env']:
-            # we don't handle that request
-            return True
-
-        rpc_res = {'uid': arg['uid']}
-
-        try:
-            if req == 'hello'   :
-                out = 'hello %s' % ' '.join(arg['arg'])
-
-            elif req == 'prepare_env':
-                env_name = arg['arg']['env_name']
-                env_spec = arg['arg']['env_spec']
-                out      = self._prepare_env(env_name, env_spec)
-
-            else:
-                # unknown command
-                self._log.info('ignore rpc command: %s', req)
-                return True
-
-            # request succeeded - respond with return value
-            rpc_res['err'] = None
-            rpc_res['out'] = out
-            rpc_res['ret'] = 0
-
-        except Exception as e:
-            # request failed for some reason - indicate error
-            rpc_res['err'] = repr(e)
-            rpc_res['out'] = None
-            rpc_res['ret'] = 1
-            self._log.exception('control cmd failed')
-
-        # publish the response (success or failure)
-        self.publish(rpc.CONTROL_PUBSUB, {'cmd': 'rpc_res',
-                                          'arg':  rpc_res})
-
-
-    # --------------------------------------------------------------------------
-    #
     def _ctrl_service_up(self, msg):
 
-        cmd = msg['cmd']
         uid = msg['arg']['uid']
 
         # This message signals that an agent service instance is up and running.
@@ -698,17 +652,15 @@ class Agent_0(rpu.Worker):
 
         if uid not in self._service_uids_launched:
             # we do not know this service instance
-            self._log.warn('=== ignore service startup signal for %s', uid)
+            self._log.warn('ignore service startup signal for %s', uid)
             return True
 
         if uid in self._service_uids_running:
-            self._log.warn('=== duplicated service startup signal for %s', uid)
+            self._log.warn('duplicated service startup signal for %s', uid)
             return True
 
-        self._log.debug('=== service startup message for %s', uid)
-
         self._service_uids_running.append(uid)
-        self._log.debug('=== service %s started (%s / %s)', uid,
+        self._log.debug('service %s started (%s / %s)', uid,
                         len(self._service_uids_running),
                         len(self._service_uids_launched))
 
@@ -724,7 +676,7 @@ class Agent_0(rpu.Worker):
     #
     def _prepare_env(self, env_name, env_spec):
 
-        self._log.debug('env_spec: %s', env_spec)
+        self._log.debug('env_spec %s: %s', env_name, env_spec)
 
         etype = env_spec.get('type', 'venv')
         evers = env_spec.get('version')

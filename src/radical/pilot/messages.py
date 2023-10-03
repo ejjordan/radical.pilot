@@ -1,17 +1,34 @@
 
 
-from typing import Optional, Dict, Tuple, Any
+from typing import Any
 
 import radical.utils as ru
+
+# ------------------------------------------------------------------------------
+#
+class RPBaseMessage(ru.Message):
+
+    # rpc distinguishes messages which are forwarded to the proxy bridge and
+    # those which are not and thus remain local to the module they originate in.
+
+    _schema   = {'fwd'      : bool}
+    _defaults = {'_msg_type': 'rp_msg',
+                 'fwd'      : False}
+
+
+    # we do not register this message type - it is not supposed to be used
+    # directly.
 
 
 # ------------------------------------------------------------------------------
 #
-class HeartbeatMessage(ru.Message):
+class HeartbeatMessage(RPBaseMessage):
 
+    # heartbeat messages are never forwarded
 
-    _schema   = {'uid'      : str  }
+    _schema   = {'uid'      : str}
     _defaults = {'_msg_type': 'heartbeat',
+                 'fwd'      : False,
                  'uid'      : None}
 
 
@@ -20,7 +37,7 @@ ru.Message.register_msg_type('heartbeat', HeartbeatMessage)
 
 # ------------------------------------------------------------------------------
 #
-class RPCRequestMessage(ru.Message):
+class RPCRequestMessage(RPBaseMessage):
 
     _schema   = {'uid'      : str,   # uid of message
                  'addr'     : str,   # who is expected to act on the request
@@ -29,18 +46,21 @@ class RPCRequestMessage(ru.Message):
                  'kwargs'   : dict}  # rpc command named arguments
     _defaults = {
                  '_msg_type': 'rpc_req',
+                 'fwd'      : True,
                  'uid'      : None,
                  'addr'     : None,
                  'cmd'      : None,
                  'args'     : [],
                  'kwargs'   : {}}
 
+
+
 ru.Message.register_msg_type('rpc_req', RPCRequestMessage)
 
 
 # ------------------------------------------------------------------------------
 #
-class RPCResultMessage(ru.Message):
+class RPCResultMessage(RPBaseMessage):
 
     _schema   = {'uid'      : str,  # uid of rpc call
                  'val'      : Any,  # return value (`None` by default)
@@ -48,6 +68,7 @@ class RPCResultMessage(ru.Message):
                  'err'      : str,  # stderr
                  'exc'      : str}  # raised exception representation
     _defaults = {'_msg_type': 'rpc_res',
+                 'fwd'      : True,
                  'uid'      : None,
                  'val'      : None,
                  'out'      : None,
@@ -58,7 +79,7 @@ class RPCResultMessage(ru.Message):
     #
     def __init__(self, rpc_req=None, from_dict=None, **kwargs):
 
-        # when constfructed from a request message copy the uid
+        # when constructed from a request message copy the uid
 
         if rpc_req:
             if not from_dict:

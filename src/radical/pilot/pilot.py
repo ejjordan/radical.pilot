@@ -7,12 +7,15 @@ import copy
 import time
 import queue
 
+import threading     as mt
+
 import radical.utils as ru
 
 from . import PilotManager
 from . import states    as rps
 from . import constants as rpc
 
+from .messages           import RPCRequestMessage, RPCResultMessage
 from .staging_directives import complete_url
 
 
@@ -157,18 +160,16 @@ class Pilot(object):
         self._pilot_sandbox   .path  = self._pilot_sandbox   .path % expand
 
         # hook into the control pubsub for rpc handling
-        self._rpc_queue = queue.Queue()
-        self._ctrl_addr_sub   = self._session._reg['bridges.control_pubsub.addr_sub']
-        self._ctrl_addr_pub   = self._session._reg['bridges.control_pubsub.addr_pub']
+        self._rpc_reqs = dict()
+        ctrl_addr_sub  = self._session._reg['bridges.control_pubsub.addr_sub']
+        ctrl_addr_pub  = self._session._reg['bridges.control_pubsub.addr_pub']
 
-        ru.zmq.Subscriber(rpc.CONTROL_PUBSUB, url=self._ctrl_addr_sub,
-                          log=self._log, prof=self._prof,
-                          cb=self._control_cb, topic=rpc.CONTROL_PUBSUB)
-
-        self._ctrl_pub = ru.zmq.Publisher(rpc.CONTROL_PUBSUB, url=self._ctrl_addr_pub,
+        self._ctrl_pub = ru.zmq.Publisher(rpc.CONTROL_PUBSUB, url=ctrl_addr_pub,
                                           log=self._log, prof=self._prof)
 
-        ru.zmq.test_pubsub(rpc.CONTROL_PUBSUB, self._ctrl_addr_pub, self._ctrl_addr_sub)
+        ru.zmq.Subscriber(rpc.CONTROL_PUBSUB, url=ctrl_addr_sub,
+                          log=self._log, prof=self._prof, cb=self._control_cb,
+                          topic=rpc.CONTROL_PUBSUB)
 
 
     # --------------------------------------------------------------------------
@@ -193,17 +194,6 @@ class Pilot(object):
         state = self.state
 
         self._log.info("[Callback]: pilot %s state: %s.", uid, state)
-
-        if state in rps.FINAL:
-            # dump json
-            json = self.as_dict()
-          # json['_id']  = self.uid
-            json['type'] = 'pilot'
-            json['uid']  = self.uid
-
-            tgt = '%s/%s.json' % (self._session.path, self.uid)
-            ru.write_json(json, tgt)
-
 
         if state == rps.FAILED and self._exit_on_error:
             self._log.error("[Callback]: pilot '%s' failed (exit)", uid)
@@ -252,7 +242,14 @@ class Pilot(object):
         self._state = target
 
         # keep all information around
-        self._pilot_dict = copy.deepcopy(pilot_dict)
+        ru.dict_merge(self._pilot_dict, pilot_dict, ru.OVERWRITE)
+
+        # FIXME MONGODB
+        resources = self._pilot_dict.get('resources') or {}
+        rm_info   = resources.get('rm_info')
+        if rm_info:
+            del self._pilot_dict['resources']['rm_info']
+            self._pilot_dict['resource_details'] = rm_info
 
         # invoke pilot specific callbacks
         # FIXME: this iteration needs to be thread-locked!
@@ -291,6 +288,7 @@ class Pilot(object):
                'stdout'           : self.stdout,
                'stderr'           : self.stderr,
                'resource'         : self.resource,
+               'resources'        : self.resources,
                'endpoint_fs'      : str(self._endpoint_fs),
                'resource_sandbox' : str(self._resource_sandbox),
                'session_sandbox'  : str(self._session_sandbox),
@@ -403,6 +401,15 @@ class Pilot(object):
         """str: The resource tag of this pilot."""
 
         return self._descr.get('resource')
+
+
+    # --------------------------------------------------------------------------
+    #
+    @property
+    def resources(self):
+        """str: The amount of resources used by this pilot."""
+
+        return self._pilot_dict.get('resources')
 
 
     # --------------------------------------------------------------------------
@@ -697,8 +704,7 @@ class Pilot(object):
 
         """
 
-        self.rpc('prepare_env', {'env_name': env_name,
-                                 'env_spec': env_spec})
+        self.rpc('prepare_env', env_name=env_name, env_spec=env_spec)
 
 
     # --------------------------------------------------------------------------
@@ -729,20 +735,28 @@ class Pilot(object):
 
     # --------------------------------------------------------------------------
     #
-    def _control_cb(self, topic, msg):
+    def _control_cb(self, topic, msg_data):
 
-        cmd = msg['cmd']
-        arg = msg['arg']
+        # we only listen for RPCResponse messages
 
-        if cmd == 'rpc_res':
+        try:
+            msg = ru.zmq.Message.deserialize(msg_data)
 
-            self._log.debug('rpc res: %s', arg)
-            self._rpc_queue.put(arg)
+            if isinstance(msg, RPCResultMessage):
+
+                self._log.debug_4('handle rpc result %s', msg)
+
+                if msg.uid in self._rpc_reqs:
+                    self._rpc_reqs[msg.uid]['res'] = msg
+                    self._rpc_reqs[msg.uid]['evt'].set()
+
+        except:
+            pass
 
 
     # --------------------------------------------------------------------------
     #
-    def rpc(self, cmd, args=None):
+    def rpc(self, cmd, *args, **kwargs):
         '''Remote procedure call.
 
         Send am RPC command and arguments to the pilot and wait for the
@@ -750,26 +764,35 @@ class Pilot(object):
         thread safe to have multiple concurrent RPC calls.
         '''
 
-        if not args:
-            args = dict()
+        # RPC's can only be handled in `PMGR_ACTIVE` state
+        # FIXME: RPCs will hang vorever if the pilot dies after sending the msg
+        self.wait(rps.PMGR_ACTIVE)
 
-        rpc_id  = ru.generate_id('rpc')
-        rpc_req = {'uid' : rpc_id,
-                   'rpc' : cmd,
-                   'tgt' : self._uid,
-                   'arg' : args}
+        rpc_id  = ru.generate_id('%s.rpc' % self._uid)
+        rpc_req = RPCRequestMessage(uid=rpc_id, cmd=cmd, args=args,
+                                    kwargs=kwargs, addr=self.uid)
 
+        self._rpc_reqs[rpc_id] = {
+                'req': rpc_req,
+                'res': None,
+                'evt': mt.Event(),
+                'time': time.time(),
+                }
 
-        self._ctrl_pub.put(rpc.CONTROL_PUBSUB, {'cmd': 'rpc_req',
-                                                'arg':  rpc_req,
-                                                'fwd': True})
-        rpc_res = self._rpc_queue.get()
-        self._log.debug('rpc result: %s', rpc_res['ret'])
+        self._ctrl_pub.put(rpc.CONTROL_PUBSUB, rpc_req)
 
-        if rpc_res['ret']:
-            raise RuntimeError('rpc failed: %s' % rpc_res['err'])
+        while True:
 
-        return rpc_res['ret']
+            if not self._rpc_reqs[rpc_id]['evt'].wait(timeout=60):
+                self._log.debug('still waiting for rpc request %s', rpc_id)
+                continue
+
+            rpc_res = self._rpc_reqs[rpc_id]['res']
+
+            if rpc_res.exc:
+                raise RuntimeError('rpc failed: %s' % rpc_res.exc)
+
+            return rpc_res.val
 
 
     # --------------------------------------------------------------------------
