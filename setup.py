@@ -17,6 +17,7 @@ import shutil
 import subprocess as sp
 
 from setuptools import setup, Command, find_namespace_packages
+from pathlib    import Path
 
 
 # ------------------------------------------------------------------------------
@@ -206,11 +207,19 @@ with open('%s/requirements.txt' % root, encoding='utf-8') as freq:
 
 # ------------------------------------------------------------------------------
 #
+this_directory = Path(__file__).parent
+long_description = (this_directory / "README.md").read_text(encoding='utf-8')
+
+
+# ------------------------------------------------------------------------------
+#
 setup_args = {
     'name'               : name,
     'namespace_packages' : ['radical'],
     'version'            : version,
     'description'        : 'The RADICAL pilot job framework',
+    'long_description'   : long_description,
+    'long_description_content_type' : 'text/markdown',
     'author'             : 'RADICAL Group at Rutgers University',
     'author_email'       : 'radical@rutgers.edu',
     'maintainer'         : 'The RADICAL Group',
@@ -245,7 +254,6 @@ setup_args = {
                             'bin/radical-pilot-agent_0',
                             'bin/radical-pilot-agent_n',
                           # 'bin/radical-pilot-agent-bridge',
-                            'bin/radical-pilot-agent-funcs',
                             'bin/radical-pilot-agent-statepush',
                             'bin/radical-pilot-bridge',
                             'bin/radical-pilot-bson2json',
@@ -266,6 +274,7 @@ setup_args = {
                             'bin/radical-pilot-raptor-worker',
                             'bin/radical-pilot-resources',
                             'bin/radical-pilot-run-session',
+                            'bin/radical-pilot-service-signal',
                             'bin/radical-pilot-stats',
                             'bin/radical-pilot-stats.plot',
                             'bin/radical-pilot-ve',

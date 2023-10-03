@@ -134,9 +134,6 @@ class PMGRLaunchingComponent(rpu.Component):
 
         self._stager_queue = self.get_output_ep(rpc.STAGER_REQUEST_QUEUE)
 
-        # we listen for pilot cancel commands
-        self.register_subscriber(rpc.CONTROL_PUBSUB, self._pmgr_control_cb)
-
         # also listen for completed staging directives
         self.register_subscriber(rpc.STAGER_RESPONSE_PUBSUB, self._staging_ack_cb)
         self._active_sds = dict()
@@ -220,12 +217,12 @@ class PMGRLaunchingComponent(rpu.Component):
 
     # --------------------------------------------------------------------------
     #
-    def _pmgr_control_cb(self, topic, msg):
+    def control_cb(self, topic, msg):
 
         cmd = msg['cmd']
         arg = msg['arg']
 
-        self._log.debug('launcher got %s', msg)
+        self._log.debug_9('launcher got %s', msg)
 
         if cmd == 'kill_pilots':
 
@@ -241,8 +238,6 @@ class PMGRLaunchingComponent(rpu.Component):
             self._log.info('received "kill_pilots" command (%s)', pids)
 
             self._kill_pilots(pids)
-
-        return True
 
 
     # --------------------------------------------------------------------------
@@ -424,8 +419,13 @@ class PMGRLaunchingComponent(rpu.Component):
             for fname in ru.as_list(pilot['description'].get('input_staging')):
                 base = os.path.basename(fname)
                 # checking if input staging file exists
+                if fname.startswith('./'):
+                    fname = fname.split('./', maxsplit=1)[1]
+                if not fname.startswith('/'):
+                    fname = os.path.join(self._cfg.base, fname)
                 if not os.path.exists(fname):
-                    raise RuntimeError('input_staging file does not exists: %s for pilot %s' % fname, pid)
+                    raise RuntimeError('input_staging file does not exists: '
+                                       '%s for pilot %s' % (fname, pid))
 
                 ft_list.append({'src': fname,
                                 'tgt': '%s/%s' % (pid, base),
@@ -884,7 +884,8 @@ class PMGRLaunchingComponent(rpu.Component):
         agent_cfg['task_post_launch']    = task_post_launch
         agent_cfg['task_post_exec']      = task_post_exec
         agent_cfg['resource_cfg']        = copy.deepcopy(rcfg)
-        agent_cfg['debug']               = self._log.getEffectiveLevel()
+        agent_cfg['log_lvl']             = self._log.level
+        agent_cfg['debug_lvl']           = self._log.debug_level
         agent_cfg['services']            = services
 
         pilot['cfg']       = agent_cfg

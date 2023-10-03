@@ -119,7 +119,7 @@ class TaskManager(rpu.Component):
         self._tcb_lock    = mt.RLock()
         self._terminate   = mt.Event()
         self._closed      = False
-        self._task_info   = list()
+        self._task_info   = dict()
 
         for m in rpc.TMGR_METRICS:
             self._callbacks[m] = dict()
@@ -146,6 +146,8 @@ class TaskManager(rpu.Component):
         self.start()
 
         self._log.info('started tmgr %s', self._uid)
+
+        self._rep = self._session._get_reporter(name=self._uid)
         self._rep.info('<<create task manager')
 
         # overwrite the scheduler from the config file
@@ -179,15 +181,10 @@ class TaskManager(rpu.Component):
 
         # hook into the control pubsub for rpc handling
         self._rpc_queue = queue.Queue()
-        ctrl_addr_sub   = self._session._reg['bridges.control_pubsub.addr_sub']
         ctrl_addr_pub   = self._session._reg['bridges.control_pubsub.addr_pub']
 
-        ru.zmq.Subscriber(rpc.CONTROL_PUBSUB, url=ctrl_addr_sub,
-                          log=self._log, prof=self._prof,
-                          cb=self._control_cb, topic=rpc.CONTROL_PUBSUB)
-
-        self._ctrl_pub = ru.zmq.Publisher(rpc.CONTROL_PUBSUB, url=ctrl_addr_pub,
-                                          log=self._log, prof=self._prof)
+        self._ctrl_pub  = ru.zmq.Publisher(rpc.CONTROL_PUBSUB, url=ctrl_addr_pub,
+                                           log=self._log, prof=self._prof)
 
 
         self._prof.prof('setup_done', uid=self._uid)
@@ -250,16 +247,12 @@ class TaskManager(rpu.Component):
 
         # dump json
         json = self.as_dict()
-      # json['_id']  = self.uid
-        json['type'] = 'tmgr'
-        json['uid']  = self.uid
+      # json['_id']   = self.uid
+        json['type']  = 'tmgr'
+        json['uid']   = self.uid
+        json['tasks'] = self._task_info
 
         tgt = '%s/%s.json' % (self._session.path, self.uid)
-        ru.write_json(json, tgt)
-
-        # dump task json
-        json = self._task_info
-        tgt  = '%s/tasks.%s.json' % (self._session.path, self.uid)
         ru.write_json(json, tgt)
 
 
@@ -409,8 +402,7 @@ class TaskManager(rpu.Component):
                     self._tasks[uid]._update(task_dict)
                     to_notify.append([task, s])
 
-                if task_dict['state'] in rps.FINAL:
-                    self._task_info.append(task_dict)
+                self._task_info[uid] = task_dict
 
         if to_notify:
             if _USE_BULK_CB:
@@ -565,7 +557,6 @@ class TaskManager(rpu.Component):
                 pilot_docs.append(pilot_dict)
 
         # publish to the command channel for the scheduler to pick up
-        pilot_docs = [pilot.as_dict() for pilot in pilots]
         self.publish(rpc.CONTROL_PUBSUB, {'cmd' : 'add_pilots',
                                           'arg' : {'pilots': pilot_docs,
                                                    'tmgr'  : self.uid}})
@@ -644,7 +635,8 @@ class TaskManager(rpu.Component):
 
     # --------------------------------------------------------------------------
     #
-    def _control_cb(self, topic, msg):
+    # FIXME RPC
+    def control_cb(self, topic, msg):
 
         cmd = msg['cmd']
         arg = msg['arg']
@@ -660,31 +652,15 @@ class TaskManager(rpu.Component):
     def pilot_rpc(self, pid, cmd, args):
         '''Remote procedure call.
 
-        Send am RPC command and arguments to the pilot and wait for the
+        Send an RPC command and arguments to the pilot and wait for the
         response.  This is a synchronous operation at this point, and it is not
         thread safe to have multiple concurrent RPC calls.
         '''
 
         if pid not in self._pilots:
-            raise ValueError('tmgr does not know pilot %s' % uid)
+            raise ValueError('tmgr does not know pilot %s' % pid)
 
-        rpc_id  = ru.generate_id('rpc')
-        rpc_req = {'uid' : rpc_id,
-                   'rpc' : cmd,
-                   'tgt' : pid,
-                   'arg' : args}
-
-        self._ctrl_pub.put(rpc.CONTROL_PUBSUB, {'cmd': 'rpc_req',
-                                                'arg':  rpc_req,
-                                                'fwd': True})
-
-        rpc_res = self._rpc_queue.get()
-        self._log.debug('rpc result: %s', rpc_res['ret'])
-
-        if rpc_res['ret']:
-            raise RuntimeError('rpc failed: %s' % rpc_res['err'])
-
-        return rpc_res['ret']
+        return self._pilots[pid].rpc(cmd=cmd, args=args)
 
 
     # --------------------------------------------------------------------------

@@ -1,59 +1,97 @@
 
 
-from typing import Optional, Dict, Any
+from typing import Any
 
 import radical.utils as ru
+
+# ------------------------------------------------------------------------------
+#
+class RPBaseMessage(ru.Message):
+
+    # rpc distinguishes messages which are forwarded to the proxy bridge and
+    # those which are not and thus remain local to the module they originate in.
+
+    _schema   = {'fwd'      : bool}
+    _defaults = {'_msg_type': 'rp_msg',
+                 'fwd'      : False}
+
+
+    # we do not register this message type - it is not supposed to be used
+    # directly.
 
 
 # ------------------------------------------------------------------------------
 #
-class HeartbeatMessage(ru.Message):
+class HeartbeatMessage(RPBaseMessage):
 
-    # ------------------------------
-    class Payload(ru.TypedDict):
-        _schema   = {'uid': str  }
-        _defaults = {'uid': None }
-    # ------------------------------
+    # heartbeat messages are never forwarded
 
-    _schema = {
-        'payload': Payload
-    }
-
-    _defaults = {
-        'msg_type': 'heartbeat',
-        'payload' : {}
-    }
-
-
-
-    # --------------------------------------------------------------------------
-    def __init__(self, uid      : Optional[str]            = None,
-                       from_dict: Optional[Dict[str, Any]] = None):
-        '''
-        support msg construction and usage like this:
-
-            hb_msg = rp.HeartbeatMessage(uid='foo.1')
-            assert hb_msg.uid == 'foo.1
-
-        '''
-
-        if uid:
-            from_dict = {'payload': {'uid': uid}}
-
-        super().__init__(from_dict=from_dict)
-
-
-    # --------------------------------------------------------------------------
-    @property
-    def uid(self):
-        return self.payload.uid
-
-    @uid.setter
-    def uid(self, value):
-        self.payload.uid = value
+    _schema   = {'uid'      : str}
+    _defaults = {'_msg_type': 'heartbeat',
+                 'fwd'      : False,
+                 'uid'      : None}
 
 
 ru.Message.register_msg_type('heartbeat', HeartbeatMessage)
+
+
+# ------------------------------------------------------------------------------
+#
+class RPCRequestMessage(RPBaseMessage):
+
+    _schema   = {'uid'      : str,   # uid of message
+                 'addr'     : str,   # who is expected to act on the request
+                 'cmd'      : str,   # rpc command
+                 'args'     : list,  # rpc command arguments
+                 'kwargs'   : dict}  # rpc command named arguments
+    _defaults = {
+                 '_msg_type': 'rpc_req',
+                 'fwd'      : True,
+                 'uid'      : None,
+                 'addr'     : None,
+                 'cmd'      : None,
+                 'args'     : [],
+                 'kwargs'   : {}}
+
+
+
+ru.Message.register_msg_type('rpc_req', RPCRequestMessage)
+
+
+# ------------------------------------------------------------------------------
+#
+class RPCResultMessage(RPBaseMessage):
+
+    _schema   = {'uid'      : str,  # uid of rpc call
+                 'val'      : Any,  # return value (`None` by default)
+                 'out'      : str,  # stdout
+                 'err'      : str,  # stderr
+                 'exc'      : str}  # raised exception representation
+    _defaults = {'_msg_type': 'rpc_res',
+                 'fwd'      : True,
+                 'uid'      : None,
+                 'val'      : None,
+                 'out'      : None,
+                 'err'      : None,
+                 'exc'      : None}
+
+    # --------------------------------------------------------------------------
+    #
+    def __init__(self, rpc_req=None, from_dict=None, **kwargs):
+
+        # when constructed from a request message copy the uid
+
+        if rpc_req:
+            if not from_dict:
+                from_dict = dict()
+
+            from_dict['uid'] = rpc_req['uid']
+
+        super().__init__(from_dict, **kwargs)
+
+
+ru.Message.register_msg_type('rpc_res', RPCResultMessage)
+
 
 # ------------------------------------------------------------------------------
 

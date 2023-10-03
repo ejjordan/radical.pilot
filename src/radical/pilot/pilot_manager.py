@@ -127,6 +127,8 @@ class PilotManager(rpu.Component):
         self.start()
 
         self._log.info('started pmgr %s', self._uid)
+
+        self._rep = self._session._get_reporter(name=self._uid)
         self._rep.info('<<create pilot manager')
 
         # create pmgr bridges and components, use session cmgr for that
@@ -158,9 +160,6 @@ class PilotManager(rpu.Component):
 
         # also listen to the state pubsub for pilot state changes
         self.register_subscriber(rpc.STATE_PUBSUB, self._state_sub_cb)
-
-        # also listen to the state control for pilot activation
-        self.register_subscriber(rpc.CONTROL_PUBSUB, self._control_sub_cb)
 
         # let session know we exist
         self._session._register_pmgr(self)
@@ -242,13 +241,13 @@ class PilotManager(rpu.Component):
 
         # dump json
         json = self.as_dict()
-      # json['_id']  = self.uid
-        json['type'] = 'pmgr'
-        json['uid']  = self.uid
+      # json['_id']    = self.uid
+        json['type']   = 'pmgr'
+        json['uid']    = self.uid
+        json['pilots'] = [pilot.as_dict() for pilot in self._pilots.values()]
 
         tgt = '%s/%s.json' % (self._session.path, self.uid)
         ru.write_json(json, tgt)
-
 
 
     # --------------------------------------------------------------------------
@@ -308,8 +307,8 @@ class PilotManager(rpu.Component):
 
             if 'type' in thing and thing['type'] == 'pilot':
 
-                self._log.debug('state push: %s: %s', thing['uid'],
-                                                      thing['state'])
+                self._log.debug('state push: %s: %s %s', thing['uid'],
+                                thing['state'], thing.get('resources'))
 
                 # we got the state update from the state callback - don't
                 # publish it again
@@ -320,7 +319,7 @@ class PilotManager(rpu.Component):
 
     # --------------------------------------------------------------------------
     #
-    def _control_sub_cb(self, topic, msg):
+    def control_cb(self, topic, msg):
 
         if self._terminate.is_set():
             return False
@@ -328,7 +327,7 @@ class PilotManager(rpu.Component):
         cmd = msg['cmd']
         arg = msg['arg']
 
-        self._log.debug('got control cmd %s: %s', cmd, arg)
+        self._log.debug_9('got control cmd %s: %s', cmd, arg)
 
         if cmd == 'pilot_activate':
             pilot = arg['pilot']
@@ -833,7 +832,7 @@ class PilotManager(rpu.Component):
         # send the cancellation request to the pilots
         # FIXME: MongoDB
         # self._session._dbs.pilot_command('cancel_pilot', [], uids)
-        self._log.debug('=== issue cancel_pilots for %s', uids)
+        self._log.debug('issue cancel_pilots for %s', uids)
         self.publish(rpc.CONTROL_PUBSUB, {'cmd' : 'cancel_pilots',
                                           'arg' : {'pmgr' : self.uid,
                                                    'uids' : uids}})
